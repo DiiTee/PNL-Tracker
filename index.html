@@ -200,206 +200,199 @@
         </div>
     </div>
 
-    <script>
-        document.getElementById('entryDateTime').value = new Date().toISOString().slice(0, 16);
-        let chart = null;
+<script>
+    document.getElementById('entryDateTime').value = new Date().toISOString().slice(0, 16);
+    let chart = null;
 
-        // GeckoTerminal network fixes (2025)
-        const networkFix = {
-            eth: 'ethereum',
-            polygon: 'polygon_pos'
-        };
+    // Network slug fixes (2025)
+    const networkFix = {
+        eth: 'ethereum',
+        polygon: 'polygon_pos'
+    };
 
-        async function trackToken() {
-            let network = document.getElementById('network').value;
-            const rawAddress = document.getElementById('contractAddress').value.trim();
-            const contractAddress = rawAddress.toLowerCase();
-            const entryDateTime = document.getElementById('entryDateTime').value;
+    async function trackToken() {
+        let network = document.getElementById('network').value.trim();
+        const rawAddress = document.getElementById('contractAddress').value.trim();
+        const contractAddress = rawAddress.toLowerCase(); // THIS LINE WAS THE REAL KILLER
+        const entryDateTime = document.getElementById('entryDateTime').value;
 
-            if (!contractAddress) return showError('Enter a contract address');
-            if (!entryDateTime) return showError('Select entry date & time');
+        if (!contractAddress) return showError('Enter a contract address');
+        if (!entryDateTime) return showError('Select entry date & time');
 
-            const entryTime = new Date(entryDateTime).getTime();
-            if (entryTime > Date.now()) return showError('Entry time cannot be in the future');
+        const entryTime = new Date(entryDateTime).getTime();
+        if (entryTime > Date.now()) return showError('Entry time cannot be in the future');
 
-            // Apply network fix
-            network = networkFix[network] || network;
+        network = networkFix[network] || network;
 
-            hideError();
-            showLoading('Searching for token pool...');
+        hideError();
+        showLoading('Searching for token pool...');
 
-            try {
-                const poolsUrl = `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contractAddress}/pools`;
-                const poolsResponse = await fetch(poolsUrl);
+        try {
+            const poolsUrl = `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${contractAddress}/pools`;
+            console.log('Fetching:', poolsUrl); // Debug line
 
-                if (!poolsResponse.ok) {
-                    if (poolsResponse.status === 429 || poolsResponse.status === 403) {
-                        throw new Error('Rate limited by GeckoTerminal. Wait 1-2 minutes and try again.');
-                    }
-                    throw new Error('Token or network not found. Double-check address and network.');
+            const poolsResponse = await fetch(poolsUrl);
+
+            if (!poolsResponse.ok) {
+                if (poolsResponse.status === 429 || poolsResponse.status === 403) {
+                    throw new Error('Rate limited by GeckoTerminal. Wait 1-2 minutes and try again.');
                 }
-
-                const poolsData = await poolsResponse.json();
-                if (!poolsData.data || poolsData.data.length === 0) {
-                    throw new Error('No trading pools found for this token on ' + network);
+                if (poolsResponse.status === 404) {
+                    throw new Error('Token not found (404). Check address is correct and lowercase. Example working: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
                 }
-
-                // Pick most liquid pool
-                const pool = poolsData.data.sort((a, b) => 
-                    (parseFloat(b.attributes.reserve_in_usd || 0) - parseFloat(a.attributes.reserve_in_usd || 0))
-                )[0];
-
-                const poolAddress = pool.attributes.address;
-                showLoading('Fetching price history...');
-
-                // Determine timeframe
-                const hoursAgo = (Date.now() - entryTime) / (1000 * 60 * 60);
-                let timeframe = hoursAgo <= 24 ? 'hour' : hoursAgo <= 168 ? 'hour' : 'day';
-                let aggregate = hoursAgo <= 24 ? 1 : hoursAgo <= 168 ? 4 : 1;
-
-                const ohlcvUrl = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=1000`;
-                const ohlcvResponse = await fetch(ohlcvUrl);
-
-                if (!ohlcvResponse.ok) {
-                    if (ohlcvResponse.status === 429) throw new Error('Rate limited. Please wait a minute.');
-                    throw new Error('Failed to fetch price history');
-                }
-
-                const ohlcvData = await ohlcvResponse.json();
-                if (!ohlcvData.data?.attributes?.ohlcv_list) {
-                    throw new Error('No price history available');
-                }
-
-                const priceHistory = ohlcvData.data.attributes.ohlcv_list.map(c => ({
-                    time: c[0] * 1000,
-                    open: parseFloat(c[1]),
-                    high: parseFloat(c[2]),
-                    low: parseFloat(c[3]),
-                    close: parseFloat(c[4])
-                }));
-
-                const entryPoint = findEntryPrice(priceHistory, entryTime);
-                if (!entryPoint) throw new Error('No price data for your entry time. Try a more recent date.');
-
-                const relevantData = priceHistory.filter(p => p.time >= entryPoint.time - 3600000); // ±1h buffer
-                displayResults(pool, entryPoint, relevantData, network, poolAddress);
-
-            } catch (err) {
-                hideLoading();
-                showError(err.message);
-                console.error(err);
-            }
-        }
-
-        // CORRECT ENTRY PRICE LOGIC (this was the main bug!)
-        function findEntryPrice(history, entryTime) {
-            let best = null;
-            for (const p of history) {
-                if (p.time <= entryTime) {
-                    if (!best || p.time > best.time) best = p;
-                }
-            }
-            return best || history[0];
-        }
-
-        function displayResults(pool, entryPoint, history, network, poolAddress) {
-            const entryPrice = entryPoint.close;
-            const currentPrice = history[history.length - 1].close;
-            const change = ((currentPrice - entryPrice) / entryPrice) * 100;
-
-            let peak = entryPrice, peakTime = entryPoint.time;
-            let lowest = entryPrice, lowTime = entryPoint.time;
-
-            for (const p of history) {
-                if (p.high > peak) { peak = p.high; peakTime = p.time; }
-                if (p.low < lowest) { lowest = p.low; lowTime = p.time; }
+                throw new Error(`API error ${poolsResponse.status}. Double-check network and address.`);
             }
 
-            document.getElementById('tokenInfo').innerHTML = `
-                <div style="width:48px;height:48px;border-radius:50%;background:#2a3142;"></div>
-                <div>
-                    <h3>${pool.attributes.name || 'Unknown Token'}</h3>
-                    <div style="color:#9ca3af;font-family:'JetBrains Mono';">
-                        ${pool.attributes.base_token_symbol || '???'} • ${network.toUpperCase()}
-                    </div>
-                    <a href="https://www.geckoterminal.com/${network}/pools/${poolAddress}" target="_blank" style="color:#2196f3;font-size:12px;">
-                        View on GeckoTerminal ↗
-                    </a>
-                </div>
-            `;
+            const poolsData = await poolsResponse.json();
+            if (!poolsData.data || poolsData.data.length === 0) {
+                throw new Error('No active pools found. Token may be dead or not listed yet.');
+            }
 
-            document.getElementById('metricsGrid').innerHTML = `
-                <div class="stat-card"><div class="stat-label">Entry Price</div><div class="stat-value neutral">$${formatPrice(entryPrice)}</div></div>
-                <div class="stat-card"><div class="stat-label">Current Price</div><div class="stat-value ${change>=0?'profit':'loss'}">$${formatPrice(currentPrice)}</div><div class="${change>=0?'profit':'loss'}">${change>=0?'+':''}${change.toFixed(2)}%</div></div>
-                <div class="stat-card"><div class="stat-label">Peak from Entry</div><div class="stat-value profit">$${formatPrice(peak)}</div><div class="profit">+${((peak/entryPrice-1)*100).toFixed(2)}%</div></div>
-                <div class="stat-card"><div class="stat-label">Lowest from Entry</div><div class="stat-value ${lowest/entryPrice<0.75?'loss':'neutral'}">$${formatPrice(lowest)}</div></div>
-            `;
+            const pool = poolsData.data.sort((a, b) => 
+                (parseFloat(b.attributes.reserve_in_usd || 0) - parseFloat(a.attributes.reserve_in_usd || 0))
+            )[0];
 
-            createChart(history, entryPrice);
+            const poolAddress = pool.attributes.address;
+            showLoading('Loading price chart...');
+
+            const hoursAgo = (Date.now() - entryTime) / (36e5);
+            const timeframe = hoursAgo <= 24 ? 'hour' : 'day';
+            const aggregate = hoursAgo <= 24 ? 1 : hoursAgo <= 168 ? 4 : 1;
+
+            const ohlcvUrl = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=1000`;
+            const ohlcvResponse = await fetch(ohlcvUrl);
+
+            if (!ohlcvResponse.ok) throw new Error('Failed to load price history');
+
+            const ohlcvData = await ohlcvResponse.json();
+            if (!ohlcvData.data?.attributes?.ohlcv_list?.length) {
+                throw new Error('No price history available');
+            }
+
+            const priceHistory = ohlcvData.data.attributes.ohlcv_list.map(c => ({
+                time: c[0] * 1000,
+                open: parseFloat(c[1]),
+                high: parseFloat(c[2]),
+                low: parseFloat(c[3]),
+                close: parseFloat(c[4])
+            }));
+
+            const entryPoint = findEntryPrice(priceHistory, entryTime);
+            if (!entryPoint) throw new Error('No price data at your entry time. Try a more recent date.');
+
+            const relevantData = priceHistory.filter(p => p.time >= entryPoint.time - 3600000);
+            displayResults(pool, entryPoint, relevantData, network, poolAddress);
+
+        } catch (err) {
             hideLoading();
-            document.getElementById('resultsSection').style.display = 'block';
+            showError(err.message);
+            console.error('Error:', err);
+        }
+    }
+
+    function findEntryPrice(history, entryTime) {
+        let best = null;
+        for (const p of history) {
+            if (p.time <= entryTime && (!best || p.time > best.time)) best = p;
+        }
+        return best || history[0];
+    }
+
+    function displayResults(pool, entryPoint, history, network, poolAddress) {
+        const entryPrice = entryPoint.close;
+        const currentPrice = history[history.length - 1].close;
+        const change = ((currentPrice - entryPrice) / entryPrice) * 100;
+
+        let peak = entryPrice, lowest = entryPrice;
+        for (const p of history) {
+            if (p.high > peak) peak = p.high;
+            if (p.low < lowest) lowest = p.low;
         }
 
-        function createChart(data, entryPrice) {
-            const ctx = document.getElementById('priceChart');
-            if (chart) chart.destroy();
+        document.getElementById('tokenInfo').innerHTML = `
+            <div style="width:48px;height:48px;border-radius:50%;background:#2a3142;"></div>
+            <div>
+                <h3>${pool.attributes.name || 'Unknown'}</h3>
+                <div style="color:#9ca3af;font-family:'JetBrains Mono';">
+                    ${pool.attributes.base_token_symbol || '??'} • ${network.toUpperCase()}
+                </div>
+                <a href="https://www.geckoterminal.com/${network}/pools/${poolAddress}" target="_blank" style="color:#2196f3;font-size:12px;">
+                    View on GeckoTerminal
+                </a>
+            </div>
+        `;
 
-            chart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    datasets: [{
-                        label: 'Price USD',
-                        data: data.map(p => ({ x: p.time, y: p.close })),
-                        borderColor: '#00ff88',
-                        backgroundColor: 'rgba(0,255,136,0.1)',
-                        fill: true,
-                        tension: 0.2,
-                        pointRadius: 0
-                    }, {
-                        label: 'Entry Price',
-                        data: data.map(p => ({ x: p.time, y: entryPrice })),
-                        borderColor: '#2196f3',
-                        borderDash: [6, 6],
-                        borderWidth: 2,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: { type: 'time', time: { unit: 'day' }, grid: { color: '#2a3142' }, ticks: { color: '#9ca3af' } },
-                        y: { grid: { color: '#2a3142' }, ticks: { color: '#9ca3af', callback: v => '$' + formatPrice(v) } }
-                    },
-                    plugins: { legend: { labels: { color: '#9ca3af' } } }
+        document.getElementById('metricsGrid').innerHTML = `
+            <div class="stat-card"><div class="stat-label">Entry Price</div><div class="stat-value neutral">$${formatPrice(entryPrice)}</div></div>
+            <div class="stat-card"><div class="stat-label">Current Price</div><div class="stat-value ${change>=0?'profit':'loss'}">$${formatPrice(currentPrice)}</div><div class="${change>=0?'profit':'loss'}">${change>=0?'+' : ''}${change.toFixed(2)}%</div></div>
+            <div class="stat-card"><div class="stat-label">Peak from Entry</div><div class="stat-value profit">$${formatPrice(peak)}</div><div class="profit">+${((peak/entryPrice-1)*100).toFixed(2)}%</div></div>
+            <div class="stat-card"><div class="stat-label">Lowest from Entry</div><div class="stat-value ${lowest/entryPrice<0.75?'loss':'neutral'}">$${formatPrice(lowest)}</div></div>
+        `;
+
+        createChart(history, entryPrice);
+        hideLoading();
+        document.getElementById('resultsSection').style.display = 'block';
+    }
+
+    function createChart(data, entryPrice) {
+        const ctx = document.getElementById('priceChart');
+        if (chart) chart.destroy();
+
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Price USD',
+                    data: data.map(p => ({ x: p.time, y: p.close })),
+                    borderColor: '#00ff88',
+                    backgroundColor: 'rgba(0,255,136,0.1)',
+                    fill: true,
+                    tension: 0.2,
+                    pointRadius: 0
+                }, {
+                    label: 'Entry Price',
+                    data: data.map(p => ({ x: p.time, y: entryPrice })),
+                    borderColor: '#2196f3',
+                    borderDash: [6, 6],
+                    borderWidth: 2,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { type: 'time', grid: { color: '#2a3142' }, ticks: { color: '#9ca3af' } },
+                    y: { grid: { color: '#2a3142' }, ticks: { color: '#9ca3af', callback: v => '$' + formatPrice(v) } }
                 }
-            });
-        }
+            }
+        });
+    }
 
-        function formatPrice(p) {
-            if (p < 0.000001) return p.toFixed(10).replace(/0+$/, '');
-            if (p < 0.001) return p.toFixed(8);
-            if (p < 1) return p.toFixed(6);
-            return p.toFixed(4);
-        }
+    function formatPrice(p) {
+        if (p < 1e-6) return p.toFixed(10).replace(/0+$/, '');
+        if (p < 0.001) return p.toFixed(8);
+        if (p < 1) return p.toFixed(6);
+        return p.toFixed(4);
+    }
 
-        function showError(msg) {
-            const el = document.getElementById('errorMessage');
-            el.textContent = msg;
-            el.style.display = 'block';
-        }
-        function hideError() { document.getElementById('errorMessage').style.display = 'none'; }
-        function showLoading(txt) {
-            document.getElementById('loadingText').textContent = txt;
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('trackBtn').disabled = true;
-        }
-        function hideLoading() {
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('trackBtn').disabled = false;
-        }
+    function showError(msg) {
+        document.getElementById('errorMessage').textContent = msg;
+        document.getElementById('errorMessage').style.display = 'block';
+    }
+    function hideError() { document.getElementById('errorMessage').style.display = 'none'; }
+    function showLoading(txt) {
+        document.getElementById('loadingText').textContent = txt;
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('trackBtn').disabled = true;
+    }
+    function hideLoading() {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('trackBtn').disabled = false;
+    }
 
-        document.addEventListener('keypress', e => { if (e.key === 'Enter') trackToken(); });
-    </script>
+    document.addEventListener('keypress', e => { if (e.key === 'Enter') trackToken(); });
+</script>
+
 </body>
 </html>
